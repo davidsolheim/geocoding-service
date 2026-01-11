@@ -1,6 +1,17 @@
 import { ReviewsProvider, ReviewResponse, Review, PlaceSummary } from '../types/reviews';
 import axios from 'axios';
 
+/**
+ * Google Reviews Provider using the Places API (New)
+ * 
+ * This implementation uses the new Places API endpoints (places.googleapis.com/v1)
+ * instead of the legacy endpoints (maps.googleapis.com/maps/api/place).
+ * 
+ * The new API uses:
+ * - Header-based field selection via X-Goog-FieldMask
+ * - Different response structure
+ * - Resource-based URLs
+ */
 export class GoogleReviewsProvider implements ReviewsProvider {
   private apiKey: string;
   // In-memory cache for reviews by place ID
@@ -11,6 +22,8 @@ export class GoogleReviewsProvider implements ReviewsProvider {
   private CACHE_EXPIRATION = 60 * 60 * 1000;
   // Default page size
   private DEFAULT_PAGE_SIZE = 6;
+  // Base URL for the new Places API
+  private BASE_URL = 'https://places.googleapis.com/v1/places';
 
   constructor() {
     this.apiKey = process.env.GOOGLE_MAPS_API_KEY || '';
@@ -142,38 +155,23 @@ export class GoogleReviewsProvider implements ReviewsProvider {
         console.log(`Using cached reviews for ${placeId}, found ${cachedData.reviews.length} reviews`);
         allReviews = cachedData.reviews;
       } else {
-        // Otherwise, fetch reviews using multiple sort options to get more
-        console.log(`Fetching fresh reviews for ${placeId} using multiple methods`);
-        const reviewPromises = [
-          this.fetchReviewsWithSort(placeId, language, 'most_relevant'),
-          this.fetchReviewsWithSort(placeId, language, 'newest'),
-          this.fetchReviewsWithSort(placeId, language, 'highest_rating')
-        ];
+        // Fetch reviews using the new API
+        // Note: The new Places API doesn't support sort options in the same way
+        // We'll fetch reviews and they'll come back in default order
+        console.log(`Fetching fresh reviews for ${placeId} using Places API (New)`);
         
-        const reviewResults = await Promise.all(reviewPromises);
+        const reviewsResult = await this.fetchReviewsNew(placeId, language);
         
-        // Log how many reviews we got from each sort option
-        reviewResults.forEach((result, index) => {
-          const sortMethod = ['most_relevant', 'newest', 'highest_rating'][index];
-          console.log(`Got ${result.results.length} reviews from ${sortMethod} sort for ${placeId}`);
-        });
-        
-        // Combine all reviews from different sorts and deduplicate
-        const combinedReviews = this.deduplicateReviews([
-          ...reviewResults[0].results,
-          ...reviewResults[1].results,
-          ...reviewResults[2].results,
-        ]);
-        
-        console.log(`After deduplication, have ${combinedReviews.length} unique reviews for ${placeId}`);
+        if (reviewsResult.success && reviewsResult.results.length > 0) {
+          console.log(`Got ${reviewsResult.results.length} reviews for ${placeId}`);
+          allReviews = reviewsResult.results;
+        }
         
         // Update cache
         this.reviewsCache.set(cacheKey, {
-          reviews: combinedReviews,
+          reviews: allReviews,
           timestamp: Date.now()
         });
-        
-        allReviews = combinedReviews;
       }
       
       // Apply rating filter if specified
@@ -192,7 +190,7 @@ export class GoogleReviewsProvider implements ReviewsProvider {
     }
   }
 
-  // Fetch place details to get overall rating and review count
+  // Fetch place details using the new Places API
   private async getPlaceDetails(placeId: string, language: string): Promise<ReviewResponse> {
     try {
       // Check cache first
@@ -225,66 +223,43 @@ export class GoogleReviewsProvider implements ReviewsProvider {
       
       console.log(`Using Google Maps API Key: ${this.apiKey.substring(0, 6)}...`);
       
-      // First try with the Basic data request which often has more accurate ratings
-      const basicResponse = await axios.get(
-        'https://maps.googleapis.com/maps/api/place/details/json',
+      // Use the new Places API endpoint
+      // The new API uses a different URL structure and header-based field selection
+      const response = await axios.get(
+        `${this.BASE_URL}/${placeId}`,
         {
-          params: {
-            place_id: placeId,
-            key: this.apiKey,
-            language: language,
-            fields: 'name,rating,user_ratings_total,formatted_address',
+          headers: {
+            'X-Goog-Api-Key': this.apiKey,
+            'X-Goog-FieldMask': 'displayName,rating,userRatingCount,formattedAddress,googleMapsUri',
+            'Accept-Language': language
           }
         }
       );
       
-      // Log the response status for debugging
-      console.log(`Google Places API response status: ${basicResponse.data.status}`);
-      if (basicResponse.data.status !== 'OK') {
-        console.error('Full error response:', basicResponse.data);
-        throw new Error(`Fetching place details failed: ${basicResponse.data.status}${basicResponse.data.error_message ? ` - ${basicResponse.data.error_message}` : ''}`);
-      }
-      
-      // Then try with more fields to get the URL
-      const detailsResponse = await axios.get(
-        'https://maps.googleapis.com/maps/api/place/details/json',
-        {
-          params: {
-            place_id: placeId,
-            key: this.apiKey,
-            language: language,
-            fields: 'url'
-          }
-        }
-      );
-
-      const basicResult = basicResponse.data.result;
-      const detailsResult = detailsResponse.data.result;
-
-      // Log the raw data to help with debugging
-      console.log('Basic API response for place details:', {
-        name: basicResult.name,
-        rating: basicResult.rating,
-        totalReviews: basicResult.user_ratings_total,
+      // Log the response for debugging
+      console.log('Google Places API (New) response:', {
+        name: response.data.displayName?.text,
+        rating: response.data.rating,
+        totalReviews: response.data.userRatingCount,
       });
 
       // Log a warning if the business has many more reviews than we can fetch
-      if (typeof basicResult.user_ratings_total === 'number' && basicResult.user_ratings_total > 20) {
+      if (typeof response.data.userRatingCount === 'number' && response.data.userRatingCount > 20) {
         console.warn(
-          `⚠️ Google API limitation: Place ${placeId} has ${basicResult.user_ratings_total} reviews, ` +
-          `but the API will only return ~15 reviews maximum. This is a Google API limitation, ` +
+          `⚠️ Google API limitation: Place ${placeId} has ${response.data.userRatingCount} reviews, ` +
+          `but the API will only return ~5 reviews maximum. This is a Google API limitation, ` +
           `not an issue with our implementation.`
         );
       }
 
       // Create a more robust summary with fallbacks
       const summary: PlaceSummary = {
-        name: basicResult.name || '',
+        name: response.data.displayName?.text || '',
         // Ensure we have a valid rating - if API returns null/undefined, default to 0
-        rating: typeof basicResult.rating === 'number' ? basicResult.rating : 0,
+        rating: typeof response.data.rating === 'number' ? response.data.rating : 0,
         // Ensure we have a valid review count - if API returns null/undefined, default to 0
-        totalReviews: typeof basicResult.user_ratings_total === 'number' ? basicResult.user_ratings_total : 0,
-        url: detailsResult?.url || `https://www.google.com/maps/place/?q=place_id:${placeId}`
+        totalReviews: typeof response.data.userRatingCount === 'number' ? response.data.userRatingCount : 0,
+        url: response.data.googleMapsUri || `https://www.google.com/maps/place/?q=place_id:${placeId}`
       };
       
       // Update cache
@@ -301,49 +276,53 @@ export class GoogleReviewsProvider implements ReviewsProvider {
       };
     } catch (error: unknown) {
       console.error('Error in getPlaceDetails:', error);
+      
+      // Handle specific API errors
+      const axiosError = error as { response?: { data?: { error?: { message?: string; status?: string } }; status?: number } };
+      if (axiosError.response?.data?.error) {
+        const apiError = axiosError.response.data.error;
+        console.error('API error details:', apiError);
+        return {
+          success: false,
+          provider: this.name,
+          results: [],
+          error: {
+            code: apiError.status || axiosError.response.status?.toString() || 'UNKNOWN',
+            message: apiError.message || 'Unknown error occurred'
+          }
+        };
+      }
+      
       return {
         success: false,
         provider: this.name,
         results: [],
         error: {
-          code: (error as { response?: { status?: number } }).response?.status?.toString() || 'UNKNOWN',
+          code: axiosError.response?.status?.toString() || 'UNKNOWN',
           message: (error as { message?: string }).message || 'Unknown error occurred'
         }
       };
     }
   }
 
-  // Fetch reviews with a specific sort option
-  private async fetchReviewsWithSort(placeId: string, language: string, sortBy: string): Promise<ReviewResponse> {
+  // Fetch reviews using the new Places API
+  private async fetchReviewsNew(placeId: string, language: string): Promise<ReviewResponse> {
     try {
-      // Note: Google Places API has a hard limit of returning only 5 reviews per request
-      // regardless of how many actual reviews exist for a business. There is no official
-      // way to paginate through all reviews using the API.
+      // The new Places API includes reviews in the place details response
       const response = await axios.get(
-        'https://maps.googleapis.com/maps/api/place/details/json',
+        `${this.BASE_URL}/${placeId}`,
         {
-          params: {
-            place_id: placeId,
-            key: this.apiKey,
-            language: language,
-            fields: 'reviews',
-            reviews_sort: sortBy
+          headers: {
+            'X-Goog-Api-Key': this.apiKey,
+            'X-Goog-FieldMask': 'reviews',
+            'Accept-Language': language
           }
         }
       );
 
-      if (response.data.status !== 'OK') {
-        console.warn(`Fetching reviews with sort=${sortBy} failed: ${response.data.status}`);
-        return {
-          success: true,
-          provider: this.name,
-          results: []
-        };
-      }
-
       // If no reviews found
-      if (!response.data.result.reviews || response.data.result.reviews.length === 0) {
-        console.log(`No reviews found for ${placeId} with sort=${sortBy}`);
+      if (!response.data.reviews || response.data.reviews.length === 0) {
+        console.log(`No reviews found for ${placeId}`);
         return {
           success: true,
           provider: this.name,
@@ -351,8 +330,8 @@ export class GoogleReviewsProvider implements ReviewsProvider {
         };
       }
 
-      const reviews = response.data.result.reviews.map(this.transformReview);
-      console.log(`Fetched ${reviews.length} reviews with sort=${sortBy}`);
+      const reviews = response.data.reviews.map((review: GoogleReviewNew) => this.transformReviewNew(review));
+      console.log(`Fetched ${reviews.length} reviews for ${placeId}`);
       
       return {
         success: true,
@@ -360,30 +339,32 @@ export class GoogleReviewsProvider implements ReviewsProvider {
         results: reviews
       };
     } catch (error: unknown) {
-      console.error(`Error fetching reviews with sort=${sortBy}:`, error);
+      console.error(`Error fetching reviews:`, error);
+      
+      const axiosError = error as { response?: { data?: { error?: { message?: string; status?: string } }; status?: number } };
+      if (axiosError.response?.data?.error) {
+        const apiError = axiosError.response.data.error;
+        return {
+          success: false,
+          provider: this.name,
+          results: [],
+          error: {
+            code: apiError.status || axiosError.response.status?.toString() || 'UNKNOWN',
+            message: apiError.message || 'Unknown error occurred'
+          }
+        };
+      }
+      
       return {
         success: false,
         provider: this.name,
         results: [],
         error: {
-          code: (error as { response?: { status?: number } }).response?.status?.toString() || 'UNKNOWN',
+          code: axiosError.response?.status?.toString() || 'UNKNOWN',
           message: (error as { message?: string }).message || 'Unknown error occurred'
         }
       };
     }
-  }
-
-  // Remove duplicate reviews (same author and time)
-  private deduplicateReviews(reviews: Review[]): Review[] {
-    const seen = new Set<string>();
-    return reviews.filter(review => {
-      const key = `${review.author}_${review.time}`;
-      if (seen.has(key)) {
-        return false;
-      }
-      seen.add(key);
-      return true;
-    });
   }
 
   async isAvailable(): Promise<boolean> {
@@ -392,7 +373,7 @@ export class GoogleReviewsProvider implements ReviewsProvider {
         return false;
       }
       
-      // Try to fetch details for a known place (using one of your test IDs)
+      // Try to fetch details for a known place
       const response = await this.getPlaceDetails('ChIJK7PWTAelK4cRA4mU_lf0uXc', 'en');
       return response.success;
     } catch (error) {
@@ -408,16 +389,16 @@ export class GoogleReviewsProvider implements ReviewsProvider {
     };
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  private transformReview(review: any) {
+  // Transform review from the new API format
+  private transformReviewNew(review: GoogleReviewNew): Review {
     return {
-      author: review.author_name,
-      authorProfilePhoto: review.profile_photo_url,
-      rating: review.rating,
-      text: review.text,
-      time: new Date(review.time * 1000).toISOString(),
-      relativeTime: review.relative_time_description,
-      language: review.language,
+      author: review.authorAttribution?.displayName || 'Anonymous',
+      authorProfilePhoto: review.authorAttribution?.photoUri,
+      rating: review.rating || 0,
+      text: review.text?.text || '',
+      time: review.publishTime || new Date().toISOString(),
+      relativeTime: review.relativePublishTimeDescription,
+      language: review.originalText?.languageCode,
       raw: review
     };
   }
@@ -453,8 +434,6 @@ export class GoogleReviewsProvider implements ReviewsProvider {
       
       // Parse token if provided
       let tokenData = {
-        sortMethod: 'most_relevant',
-        fetchedMethods: [] as string[],
         reviewIds: new Set<string>(),
         lastReviewTime: 0,
         minimumRating: options?.minimumRating
@@ -466,8 +445,6 @@ export class GoogleReviewsProvider implements ReviewsProvider {
           const parsedToken = JSON.parse(decodedToken);
           
           tokenData = {
-            sortMethod: parsedToken.sortMethod || 'most_relevant',
-            fetchedMethods: parsedToken.fetchedMethods || [],
             reviewIds: new Set(parsedToken.reviewIds || []),
             lastReviewTime: parsedToken.lastReviewTime || 0,
             minimumRating: parsedToken.minimumRating
@@ -477,25 +454,8 @@ export class GoogleReviewsProvider implements ReviewsProvider {
         }
       }
       
-      // Determine which sort method to use next based on what's been fetched
-      const allSortMethods = ['most_relevant', 'newest', 'highest_rating'];
-      let nextSortMethods = [...allSortMethods];
-      
-      // If we have already fetched using some methods, prioritize the ones we haven't tried yet
-      if (tokenData.fetchedMethods.length > 0) {
-        nextSortMethods = allSortMethods.filter(method => !tokenData.fetchedMethods.includes(method));
-        // If we've exhausted all methods, start over with most_relevant
-        if (nextSortMethods.length === 0) {
-          nextSortMethods = ['most_relevant'];
-        }
-      }
-      
-      // Get the current sort method to use
-      const currentSortMethod = nextSortMethods[0];
-      console.log(`Using sort method: ${currentSortMethod} for next page of reviews`);
-      
-      // Fetch reviews for this sort method
-      const reviewsResponse = await this.fetchReviewsWithSort(placeId, language, currentSortMethod);
+      // Fetch reviews using the new API
+      const reviewsResponse = await this.fetchReviewsNew(placeId, language);
       
       if (!reviewsResponse.success) {
         return reviewsResponse;
@@ -530,24 +490,12 @@ export class GoogleReviewsProvider implements ReviewsProvider {
         }
       }
       
-      // Update the token data
-      tokenData.sortMethod = currentSortMethod;
-      if (!tokenData.fetchedMethods.includes(currentSortMethod)) {
-        tokenData.fetchedMethods.push(currentSortMethod);
-      }
-      
       // Determine if there are more results
-      const hasMoreReviews = 
-        // We have more sort methods to try
-        nextSortMethods.length > 1 ||
-        // Or we didn't get a full page of results from this sort method
-        reviewsResponse.results.length > uniqueReviews.length;
+      const hasMoreReviews = reviewsResponse.results.length > uniqueReviews.length;
       
       // Create a new page token
       const nextPageToken = hasMoreReviews ? 
         Buffer.from(JSON.stringify({
-          sortMethod: currentSortMethod,
-          fetchedMethods: tokenData.fetchedMethods,
           reviewIds: Array.from(tokenData.reviewIds),
           lastReviewTime: uniqueReviews.length > 0 ? 
             new Date(uniqueReviews[uniqueReviews.length - 1].time).getTime() : 0,
@@ -565,9 +513,7 @@ export class GoogleReviewsProvider implements ReviewsProvider {
         pagination: {
           nextPageToken,
           hasMoreReviews,
-          // Can't provide these accurately with chunked loading
           pageSize: pageSize,
-          // We can estimate based on summary
           totalReviews: placeDetails.summary?.totalReviews || 0
         }
       };
@@ -584,4 +530,25 @@ export class GoogleReviewsProvider implements ReviewsProvider {
       };
     }
   }
-} 
+}
+
+// Type for the new Google Places API review format
+interface GoogleReviewNew {
+  name?: string;
+  relativePublishTimeDescription?: string;
+  rating?: number;
+  text?: {
+    text: string;
+    languageCode?: string;
+  };
+  originalText?: {
+    text: string;
+    languageCode?: string;
+  };
+  authorAttribution?: {
+    displayName?: string;
+    uri?: string;
+    photoUri?: string;
+  };
+  publishTime?: string;
+}

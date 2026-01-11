@@ -1,6 +1,11 @@
 /**
- * Utility functions for interacting with Google Places API
+ * Utility functions for interacting with Google Places API (New)
+ * 
+ * This implementation uses the new Places API endpoints (places.googleapis.com/v1)
+ * instead of the legacy endpoints (maps.googleapis.com/maps/api/place).
  */
+
+const PLACES_API_BASE = 'https://places.googleapis.com/v1';
 
 /**
  * Search for a place by various parameters
@@ -32,19 +37,65 @@ export interface PlaceSearchResult {
 }
 
 /**
- * Interface for Google Places Text Search API result
+ * Interface for Google Places API (New) result
  */
-interface GooglePlacesTextSearchResult {
-  place_id: string;
-  name: string;
-  formatted_address: string;
-  geometry: {
-    location: {
-      lat: number;
-      lng: number;
-    };
+interface GooglePlacesNewResult {
+  id: string;
+  displayName?: {
+    text: string;
+    languageCode?: string;
+  };
+  formattedAddress?: string;
+  location?: {
+    latitude: number;
+    longitude: number;
   };
   types?: string[];
+}
+
+/**
+ * Interface for Autocomplete prediction
+ */
+interface AutocompletePrediction {
+  placePrediction?: {
+    placeId: string;
+    text?: {
+      text: string;
+    };
+    structuredFormat?: {
+      mainText?: { text: string };
+      secondaryText?: { text: string };
+    };
+  };
+}
+
+/**
+ * Helper to get the API key
+ */
+function getApiKey(): string {
+  const apiKey = process.env.GOOGLE_PLACES_API_KEY || process.env.GOOGLE_MAPS_API_KEY || '';
+  if (!apiKey) {
+    console.warn('⚠️ GOOGLE_PLACES_API_KEY or GOOGLE_MAPS_API_KEY environment variable is not set.');
+  }
+  return apiKey;
+}
+
+/**
+ * Transform new API result to legacy format for compatibility
+ */
+function transformToLegacyFormat(result: GooglePlacesNewResult): PlaceSearchResult['candidates'][0] {
+  return {
+    place_id: result.id,
+    name: result.displayName?.text || '',
+    formatted_address: result.formattedAddress || '',
+    geometry: result.location ? {
+      location: {
+        lat: result.location.latitude,
+        lng: result.location.longitude
+      }
+    } : undefined,
+    types: result.types
+  };
 }
 
 /**
@@ -135,37 +186,12 @@ export async function searchForPlace(params: PlaceSearchParams): Promise<PlaceSe
         }
       } catch (error) {
         console.warn('Fallback autocomplete search failed:', error);
-        // Continue with findplacefromtext if autocomplete fails
+        // Continue with text search if autocomplete fails
       }
     }
 
-    // Construct the URL for Google Place Search API (findplacefromtext)
-    let url = `https://maps.googleapis.com/maps/api/place/findplacefromtext/json?key=${process.env.GOOGLE_PLACES_API_KEY}&inputtype=textquery`;
-    
-    // Add query parameters
-    url += `&input=${encodeURIComponent(query)}`;
-    
-    // Add fields to retrieve
-    url += '&fields=place_id,name,formatted_address,geometry,types';
-    
-    // Add location bias if we have coordinates
-    if (latitude !== undefined && longitude !== undefined) {
-      url += `&locationbias=circle:5000@${latitude},${longitude}`;
-    }
-
-    // Make the request to Google
-    const response = await fetch(url);
-    const data = await response.json();
-
-    // Check if the request was successful
-    if (data.status !== 'OK' && data.status !== 'ZERO_RESULTS') {
-      throw new Error(`Google Places API error: ${data.status}`);
-    }
-
-    return {
-      status: data.status,
-      candidates: data.candidates || [],
-    };
+    // Use the new Places API Text Search
+    return await textSearch(query, latitude, longitude);
   }
 
   // If we get here, all searches failed
@@ -173,10 +199,72 @@ export async function searchForPlace(params: PlaceSearchParams): Promise<PlaceSe
 }
 
 /**
- * Helper function to search by phone number
- * Note: This is a workaround since Google's Find Place API doesn't directly
- * support phone search. We use the Text Search API which provides limited
- * support for phone numbers in some regions.
+ * Text Search using the new Places API
+ */
+async function textSearch(
+  query: string, 
+  latitude?: number, 
+  longitude?: number
+): Promise<PlaceSearchResult> {
+  const apiKey = getApiKey();
+  if (!apiKey) {
+    return { status: 'API_KEY_MISSING', candidates: [] };
+  }
+
+  const requestBody: {
+    textQuery: string;
+    locationBias?: {
+      circle: {
+        center: { latitude: number; longitude: number };
+        radius: number;
+      };
+    };
+  } = {
+    textQuery: query
+  };
+
+  // Add location bias if we have coordinates
+  if (latitude !== undefined && longitude !== undefined) {
+    requestBody.locationBias = {
+      circle: {
+        center: { latitude, longitude },
+        radius: 5000
+      }
+    };
+  }
+
+  try {
+    const response = await fetch(`${PLACES_API_BASE}/places:searchText`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Goog-Api-Key': apiKey,
+        'X-Goog-FieldMask': 'places.id,places.displayName,places.formattedAddress,places.location,places.types'
+      },
+      body: JSON.stringify(requestBody)
+    });
+
+    const data = await response.json();
+
+    if (data.error) {
+      console.error('Google Places API error:', data.error);
+      return { status: data.error.status || 'ERROR', candidates: [] };
+    }
+
+    const candidates = (data.places || []).map(transformToLegacyFormat);
+    
+    return {
+      status: candidates.length > 0 ? 'OK' : 'ZERO_RESULTS',
+      candidates
+    };
+  } catch (error) {
+    console.error('Error in text search:', error);
+    return { status: 'ERROR', candidates: [] };
+  }
+}
+
+/**
+ * Helper function to search by phone number using Text Search
  */
 async function searchByPhone(
   phone: string,
@@ -193,43 +281,52 @@ async function searchByPhone(
   let query = formattedPhone;
   if (city) query += ` ${city}`;
 
-  // Use Text Search API which has better support for phone queries
-  const url = `https://maps.googleapis.com/maps/api/place/textsearch/json?query=${encodeURIComponent(query)}&key=${process.env.GOOGLE_PLACES_API_KEY}`;
-  
-  const response = await fetch(url);
-  const data = await response.json();
-  
-  if (data.status !== 'OK' && data.status !== 'ZERO_RESULTS') {
-    throw new Error(`Google Places API error: ${data.status}`);
-  }
-  
-  // Transform the results to match our PlaceSearchResult interface
-  return {
-    status: data.status,
-    candidates: data.results?.map((result: GooglePlacesTextSearchResult) => ({
-      place_id: result.place_id,
-      name: result.name,
-      formatted_address: result.formatted_address,
-      geometry: result.geometry,
-      types: result.types
-    })) || [],
-  };
+  return await textSearch(query);
 }
 
 /**
- * Get place details by place ID
+ * Get place details by place ID using the new Places API
  */
 export async function getPlaceDetails(placeId: string) {
-  const url = `https://maps.googleapis.com/maps/api/place/details/json?place_id=${placeId}&key=${process.env.GOOGLE_PLACES_API_KEY}&fields=name,formatted_address,geometry,formatted_phone_number,website,business_status,types`;
-  
-  const response = await fetch(url);
-  const data = await response.json();
-  
-  if (data.status !== 'OK') {
-    throw new Error(`Google Places API error: ${data.status}`);
+  const apiKey = getApiKey();
+  if (!apiKey) {
+    throw new Error('Google API key is not configured');
   }
-  
-  return data.result;
+
+  try {
+    const response = await fetch(`${PLACES_API_BASE}/places/${placeId}`, {
+      headers: {
+        'X-Goog-Api-Key': apiKey,
+        'X-Goog-FieldMask': 'id,displayName,formattedAddress,location,nationalPhoneNumber,websiteUri,businessStatus,types'
+      }
+    });
+
+    const data = await response.json();
+
+    if (data.error) {
+      throw new Error(`Google Places API error: ${data.error.status || data.error.message}`);
+    }
+
+    // Transform to legacy format for compatibility
+    return {
+      place_id: data.id,
+      name: data.displayName?.text || '',
+      formatted_address: data.formattedAddress || '',
+      geometry: data.location ? {
+        location: {
+          lat: data.location.latitude,
+          lng: data.location.longitude
+        }
+      } : undefined,
+      formatted_phone_number: data.nationalPhoneNumber,
+      website: data.websiteUri,
+      business_status: data.businessStatus,
+      types: data.types
+    };
+  } catch (error) {
+    console.error('Error getting place details:', error);
+    throw error;
+  }
 }
 
 /**
@@ -265,35 +362,11 @@ export async function searchByCid(cid: string): Promise<PlaceSearchResult> {
   
   // Try to use the CID in a text search query
   // This is not guaranteed to work but sometimes Google can match it
-  const url = `https://maps.googleapis.com/maps/api/place/textsearch/json?query=cid:${encodeURIComponent(numericCid)}&key=${process.env.GOOGLE_PLACES_API_KEY}`;
-  
-  try {
-    const response = await fetch(url);
-    const data = await response.json();
-    
-    if (data.status !== 'OK' && data.status !== 'ZERO_RESULTS') {
-      console.warn(`Google Places API error for CID search: ${data.status}`);
-      return { status: 'ZERO_RESULTS', candidates: [] };
-    }
-    
-    return {
-      status: data.status,
-      candidates: data.results?.map((result: GooglePlacesTextSearchResult) => ({
-        place_id: result.place_id,
-        name: result.name,
-        formatted_address: result.formatted_address,
-        geometry: result.geometry,
-        types: result.types
-      })) || [],
-    };
-  } catch (error) {
-    console.warn('Error searching by CID:', error);
-    return { status: 'ZERO_RESULTS', candidates: [] };
-  }
+  return await textSearch(`cid:${numericCid}`);
 }
 
 /**
- * Search for a place by exact coordinates
+ * Search for a place by exact coordinates using Nearby Search
  */
 export async function searchByCoordinates(
   latitude: number,
@@ -302,22 +375,44 @@ export async function searchByCoordinates(
   if (!latitude || !longitude) {
     return { status: 'ZERO_RESULTS', candidates: [] };
   }
-  
-  // Use the Find Place API with location bias to find places near these coordinates
-  const url = `https://maps.googleapis.com/maps/api/place/findplacefromtext/json?key=${process.env.GOOGLE_PLACES_API_KEY}&inputtype=textquery&input=place&locationbias=circle:100@${latitude},${longitude}&fields=place_id,name,formatted_address,geometry,types`;
-  
+
+  const apiKey = getApiKey();
+  if (!apiKey) {
+    return { status: 'API_KEY_MISSING', candidates: [] };
+  }
+
   try {
-    const response = await fetch(url);
+    // Use the new Nearby Search API
+    const response = await fetch(`${PLACES_API_BASE}/places:searchNearby`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Goog-Api-Key': apiKey,
+        'X-Goog-FieldMask': 'places.id,places.displayName,places.formattedAddress,places.location,places.types'
+      },
+      body: JSON.stringify({
+        locationRestriction: {
+          circle: {
+            center: { latitude, longitude },
+            radius: 100 // Search within 100 meters
+          }
+        },
+        maxResultCount: 5
+      })
+    });
+
     const data = await response.json();
-    
-    if (data.status !== 'OK' && data.status !== 'ZERO_RESULTS') {
-      console.warn(`Google Places API error for coordinate search: ${data.status}`);
+
+    if (data.error) {
+      console.warn(`Google Places API error for coordinate search: ${data.error.status}`);
       return { status: 'ZERO_RESULTS', candidates: [] };
     }
+
+    const candidates = (data.places || []).map(transformToLegacyFormat);
     
     return {
-      status: data.status,
-      candidates: data.candidates || [],
+      status: candidates.length > 0 ? 'OK' : 'ZERO_RESULTS',
+      candidates
     };
   } catch (error) {
     console.warn('Error searching by coordinates:', error);
@@ -326,7 +421,7 @@ export async function searchByCoordinates(
 }
 
 /**
- * Search for a place using the Places Autocomplete API
+ * Search for a place using the Places Autocomplete API (New)
  * This often has better matching for business names
  */
 export async function searchWithAutocomplete(
@@ -336,41 +431,61 @@ export async function searchWithAutocomplete(
   if (!query) {
     return { status: 'ZERO_RESULTS', candidates: [] };
   }
-  
-  // Use the Places Autocomplete API to get predictions
-  const autocompleteUrl = `https://maps.googleapis.com/maps/api/place/autocomplete/json?input=${encodeURIComponent(query)}&types=${types}&key=${process.env.GOOGLE_PLACES_API_KEY}`;
-  
+
+  const apiKey = getApiKey();
+  if (!apiKey) {
+    return { status: 'API_KEY_MISSING', candidates: [] };
+  }
+
   try {
-    const response = await fetch(autocompleteUrl);
+    // Map legacy types to new API format
+    const includedPrimaryTypes = types === 'establishment' ? ['establishment'] : [types];
+
+    // Use the new Autocomplete API
+    const response = await fetch(`${PLACES_API_BASE}/places:autocomplete`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Goog-Api-Key': apiKey
+      },
+      body: JSON.stringify({
+        input: query,
+        includedPrimaryTypes
+      })
+    });
+
     const data = await response.json();
-    
-    if (data.status !== 'OK' && data.status !== 'ZERO_RESULTS') {
-      console.warn(`Google Places Autocomplete API error: ${data.status}`);
+
+    if (data.error) {
+      console.warn(`Google Places Autocomplete API error: ${data.error.status}`);
       return { status: 'ZERO_RESULTS', candidates: [] };
     }
-    
-    // If we have predictions, get details for each place
-    if (data.predictions && data.predictions.length > 0) {
+
+    // If we have predictions (now called suggestions), get details for each place
+    if (data.suggestions && data.suggestions.length > 0) {
       const placeResults = await Promise.all(
-        data.predictions.slice(0, 5).map(async (prediction: { place_id: string; description: string }) => {
+        data.suggestions.slice(0, 5).map(async (suggestion: AutocompletePrediction) => {
+          const placeId = suggestion.placePrediction?.placeId;
+          if (!placeId) return null;
+          
           try {
-            const details = await getPlaceDetails(prediction.place_id);
+            const details = await getPlaceDetails(placeId);
             return {
-              place_id: prediction.place_id,
-              name: details.name || prediction.description,
-              formatted_address: details.formatted_address || '',
+              place_id: placeId,
+              name: details.name || suggestion.placePrediction?.structuredFormat?.mainText?.text || '',
+              formatted_address: details.formatted_address || suggestion.placePrediction?.structuredFormat?.secondaryText?.text || '',
               geometry: details.geometry,
               types: details.types
             };
           } catch (error) {
-            console.warn(`Error getting details for place ${prediction.place_id}:`, error);
+            console.warn(`Error getting details for place ${placeId}:`, error);
             return null;
           }
         })
       );
       
       // Filter out any null results and return
-      const validResults = placeResults.filter(Boolean);
+      const validResults = placeResults.filter(Boolean) as PlaceSearchResult['candidates'];
       return {
         status: validResults.length > 0 ? 'OK' : 'ZERO_RESULTS',
         candidates: validResults
@@ -382,4 +497,4 @@ export async function searchWithAutocomplete(
     console.warn('Error searching with autocomplete:', error);
     return { status: 'ZERO_RESULTS', candidates: [] };
   }
-} 
+}
