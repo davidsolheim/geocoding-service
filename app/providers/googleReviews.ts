@@ -14,6 +14,7 @@ import axios from 'axios';
  */
 export class GoogleReviewsProvider implements ReviewsProvider {
   private apiKey: string;
+  private referer: string;
   // In-memory cache for reviews by place ID
   private reviewsCache: Map<string, { reviews: Review[], timestamp: number }> = new Map();
   // In-memory cache for place details
@@ -27,6 +28,9 @@ export class GoogleReviewsProvider implements ReviewsProvider {
 
   constructor() {
     this.apiKey = process.env.GOOGLE_MAPS_API_KEY || '';
+    // Referer header for API key HTTP referrer restrictions
+    // Should match one of the allowed referrers in your Google Cloud Console API key settings
+    this.referer = process.env.GOOGLE_API_REFERER || process.env.NEXT_PUBLIC_APP_URL || 'https://api.example.com';
     
     if (!this.apiKey) {
       console.warn('⚠️ GOOGLE_MAPS_API_KEY environment variable is not set. Google Reviews provider will not function correctly.');
@@ -231,7 +235,8 @@ export class GoogleReviewsProvider implements ReviewsProvider {
           headers: {
             'X-Goog-Api-Key': this.apiKey,
             'X-Goog-FieldMask': 'displayName,rating,userRatingCount,formattedAddress,googleMapsUri',
-            'Accept-Language': language
+            'Accept-Language': language,
+            'Referer': this.referer
           }
         }
       );
@@ -315,7 +320,8 @@ export class GoogleReviewsProvider implements ReviewsProvider {
           headers: {
             'X-Goog-Api-Key': this.apiKey,
             'X-Goog-FieldMask': 'reviews',
-            'Accept-Language': language
+            'Accept-Language': language,
+            'Referer': this.referer
           }
         }
       );

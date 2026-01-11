@@ -81,6 +81,14 @@ function getApiKey(): string {
 }
 
 /**
+ * Helper to get the referer header for API key HTTP referrer restrictions
+ * Should match one of the allowed referrers in your Google Cloud Console API key settings
+ */
+function getReferer(): string {
+  return process.env.GOOGLE_API_REFERER || process.env.NEXT_PUBLIC_APP_URL || 'https://api.example.com';
+}
+
+/**
  * Transform new API result to legacy format for compatibility
  */
 function transformToLegacyFormat(result: GooglePlacesNewResult): PlaceSearchResult['candidates'][0] {
@@ -239,7 +247,8 @@ async function textSearch(
       headers: {
         'Content-Type': 'application/json',
         'X-Goog-Api-Key': apiKey,
-        'X-Goog-FieldMask': 'places.id,places.displayName,places.formattedAddress,places.location,places.types'
+        'X-Goog-FieldMask': 'places.id,places.displayName,places.formattedAddress,places.location,places.types',
+        'Referer': getReferer()
       },
       body: JSON.stringify(requestBody)
     });
@@ -297,7 +306,8 @@ export async function getPlaceDetails(placeId: string) {
     const response = await fetch(`${PLACES_API_BASE}/places/${placeId}`, {
       headers: {
         'X-Goog-Api-Key': apiKey,
-        'X-Goog-FieldMask': 'id,displayName,formattedAddress,location,nationalPhoneNumber,websiteUri,businessStatus,types'
+        'X-Goog-FieldMask': 'id,displayName,formattedAddress,location,nationalPhoneNumber,websiteUri,businessStatus,types',
+        'Referer': getReferer()
       }
     });
 
@@ -388,7 +398,8 @@ export async function searchByCoordinates(
       headers: {
         'Content-Type': 'application/json',
         'X-Goog-Api-Key': apiKey,
-        'X-Goog-FieldMask': 'places.id,places.displayName,places.formattedAddress,places.location,places.types'
+        'X-Goog-FieldMask': 'places.id,places.displayName,places.formattedAddress,places.location,places.types',
+        'Referer': getReferer()
       },
       body: JSON.stringify({
         locationRestriction: {
@@ -446,7 +457,8 @@ export async function searchWithAutocomplete(
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'X-Goog-Api-Key': apiKey
+        'X-Goog-Api-Key': apiKey,
+        'Referer': getReferer()
       },
       body: JSON.stringify({
         input: query,

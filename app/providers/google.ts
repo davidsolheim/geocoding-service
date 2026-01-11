@@ -3,9 +3,12 @@ import axios from 'axios';
 
 export class GoogleProvider implements GeocodingProvider {
   private apiKey: string;
+  private referer: string;
 
   constructor() {
     this.apiKey = process.env.GOOGLE_MAPS_API_KEY!;
+    // Referer header for API key HTTP referrer restrictions
+    this.referer = process.env.GOOGLE_API_REFERER || process.env.NEXT_PUBLIC_APP_URL || 'https://api.example.com';
   }
 
   name = 'google';
@@ -21,6 +24,9 @@ export class GoogleProvider implements GeocodingProvider {
             language: options?.language,
             bounds: options?.bounds ? `${options.bounds.southwest.lat},${options.bounds.southwest.lng}|${options.bounds.northeast.lat},${options.bounds.northeast.lng}` : undefined,
             components: options?.country ? `country:${options.country}` : undefined
+          },
+          headers: {
+            'Referer': this.referer
           }
         }
       );
