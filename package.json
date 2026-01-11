@@ -1,7 +1,22 @@
 {
   "name": "@davidsolheim/geocoding-service",
   "version": "0.1.0",
-  "private": true,
+  "description": "A Next.js-based geocoding service with Google Maps and US Census integration",
+  "author": "David Solheim",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/davidsolheim/geocoding-service.git"
+  },
+  "keywords": [
+    "geocoding",
+    "google-maps",
+    "us-census",
+    "nextjs",
+    "api",
+    "typescript"
+  ],
+  "homepage": "https://github.com/davidsolheim/geocoding-service#readme",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
