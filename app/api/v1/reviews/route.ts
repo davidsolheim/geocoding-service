@@ -9,7 +9,7 @@ export const runtime = 'edge';
 const providers = [new GoogleReviewsProvider()];
 
 // Helper to mask API key for logging (show first 4 and last 4 chars)
-function maskApiKey(apiKey: string | null): string {
+function maskApiKey(apiKey: string | undefined): string {
   if (!apiKey) return 'none';
   if (apiKey.length <= 8) return '***';
   return `${apiKey.slice(0, 4)}...${apiKey.slice(-4)}`;
@@ -129,11 +129,11 @@ export async function POST(request: NextRequest) {
     const totalDuration = Math.round(performance.now() - startTime);
     
     // Log response details
-    const reviewCount = response.reviews?.length ?? 0;
+    const reviewCount = response.results?.length ?? 0;
     log('info', 'Request completed successfully', {
       placeId,
       reviewCount,
-      hasNextPageToken: !!response.nextPageToken,
+      hasNextPageToken: !!response.pagination?.nextPageToken,
       summaryRating: response.summary?.rating,
       summaryTotalReviews: response.summary?.totalReviews,
       providerDurationMs: providerDuration,
