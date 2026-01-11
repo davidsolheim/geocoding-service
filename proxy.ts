@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 
-export function middleware(request: NextRequest) {
+export function proxy(request: NextRequest) {
   // For the /health route, redirect to /api/v1/health
   if (request.nextUrl.pathname === '/health') {
     // Create a new URL for the API health endpoint
@@ -28,8 +28,8 @@ export function middleware(request: NextRequest) {
   return NextResponse.next();
 }
 
-// See: https://nextjs.org/docs/app/building-your-application/routing/middleware#matcher
+// See: https://nextjs.org/docs/app/building-your-application/routing/proxy#matcher
 export const config = {
-  // Apply this middleware only to /health route
+  // Apply this proxy only to /health route
   matcher: '/health',
-}; 
+};
